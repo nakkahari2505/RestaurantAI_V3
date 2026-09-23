@@ -590,35 +590,94 @@ def _send_routed_response_via_twilio(
 
 
 def _send_whatsapp_reply_in_background(
-    body: str, from_number: str, to_number: str, base_url: str,
+    body: str,
+    from_number: str,
+    to_number: str,
+    base_url: str,
 ) -> None:
-    """Run inbound WhatsApp questions through V3 BusinessQuery execution."""
-    try:
-        from services.analytics.business_query_engine import execute_business_query
-        from services.presentation.business_query_presenter import present_business_query
-        from services.semantics.business_query_parser import parse_business_query
+    """
+    Run every inbound WhatsApp message through the single RestaurantAI
+    message router, then deliver exactly the response type chosen there.
 
-        q=parse_business_query(user_message=body, previous_query=None)
-        if q.get("needs_clarification", False):
-            answer=q.get("clarification_question","I need a little more information.")
-        else:
-            result=execute_business_query(data=load_auberry_workbook(), query=q)
-            p=present_business_query(query=q, result=result)
-            if isinstance(p,str):
-                answer=p
-            elif isinstance(p,dict):
-                answer=p.get("body") or p.get("text") or p.get("message") or str(p)
-            else:
-                answer=str(p)
+    This is intentionally the same path used by the rest of the product.
+    The router owns:
+    - preservation of the established V2 Yesterday morning report,
+    - semantic BusinessQuery execution,
+    - comparison judgement,
+    - trend/chart routing,
+    - text vs image/media presentation,
+    - legacy/product fallbacks.
+
+    Keeping analytics/presentation logic out of this transport function
+    prevents WhatsApp from bypassing product routing rules.
+    """
+    try:
+        routed_response = route_message(
+            message=body,
+            conversation_id=from_number,
+        )
+
+        if not isinstance(routed_response, dict):
+            routed_response = {
+                "response_type": "text",
+                "body": str(routed_response),
+            }
+
+        response_type = str(
+            routed_response.get("response_type", "text")
+        ).strip().lower()
+
+        # Never expose internal router/presenter dictionaries to WhatsApp.
+        if response_type not in {"text", "media"}:
+            raise ValueError(
+                f"Unsupported RestaurantAI response type: {response_type}"
+            )
+
+        if not routed_response.get("body"):
+            raise ValueError(
+                "RestaurantAI router returned an empty WhatsApp response."
+            )
+
+        if response_type == "media" and not routed_response.get(
+            "relative_media_url"
+        ):
+            raise ValueError(
+                "RestaurantAI media response is missing relative_media_url."
+            )
 
         _send_routed_response_via_twilio(
-            routed_response={"response_type":"text","body":answer},
+            routed_response=routed_response,
             to_number=from_number,
             from_number=to_number,
             base_url=base_url,
         )
+
     except Exception as error:
-        print("Async V3 WhatsApp reply error:",repr(error))
+        print(
+            "Async V3 WhatsApp reply error:",
+            repr(error),
+        )
+
+        # A routing failure must produce a user-safe message, never a Python
+        # dict such as {'status': 'fallback'}.
+        try:
+            _send_routed_response_via_twilio(
+                routed_response={
+                    "response_type": "text",
+                    "body": (
+                        "I could not complete that analysis reliably. "
+                        "Please try the request once more."
+                    ),
+                },
+                to_number=from_number,
+                from_number=to_number,
+                base_url=base_url,
+            )
+        except Exception as send_error:
+            print(
+                "Async V3 WhatsApp error-message send failed:",
+                repr(send_error),
+            )
 
 
 @app.post("/whatsapp")
