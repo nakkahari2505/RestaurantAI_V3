@@ -25,15 +25,46 @@ def load_font(
         else REGULAR_FONT_PATH
     )
 
-    if not font_path.exists():
-        raise FileNotFoundError(
-            f"Required font file was not found: {font_path}"
-        )
+    # Prefer the project-bundled font when present, but do not make
+    # report generation depend on it. Railway images commonly provide
+    # DejaVu through the OS even when assets/fonts is not committed.
+    candidates = [
+        font_path,
+        Path(
+            "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"
+            if bold
+            else "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"
+        ),
+        Path(
+            "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"
+            if bold
+            else "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"
+        ),
+    ]
 
-    return ImageFont.truetype(
-        str(font_path),
-        size=size,
+    for candidate in candidates:
+        if candidate.exists():
+            return ImageFont.truetype(
+                str(candidate),
+                size=size,
+            )
+
+    # Pillow itself normally ships DejaVuSans.ttf and can resolve it by
+    # name. This also keeps local Windows development working.
+    font_name = (
+        "DejaVuSans-Bold.ttf"
+        if bold
+        else "DejaVuSans.ttf"
     )
+    try:
+        return ImageFont.truetype(
+            font_name,
+            size=size,
+        )
+    except OSError:
+        # Last-resort fallback: never crash a WhatsApp report merely
+        # because a preferred font is unavailable.
+        return ImageFont.load_default(size=size)
 
 
 def create_canvas(
