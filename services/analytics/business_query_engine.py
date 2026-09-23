@@ -638,14 +638,76 @@ def execute_business_query(data: dict, query: dict) -> dict:
         return _execute_diagnose(data, query, start_text, end_text)
 
     if group_by:
-        rows = _calculate_grouped_bundle(data, query, start_text, end_text)
+        # Grouped retrieval and grouped comparison share the same deterministic
+        # calculation path.  The old V3 code returned current-period rows here
+        # and accidentally discarded comparison intent entirely.
+        current_rows = _calculate_grouped_bundle(
+            data, query, start_text, end_text
+        )
+        comparison_period = _resolved_comparison_period(
+            query, start_text, end_text
+        )
+
+        if comparison_period is None:
+            return {
+                "status": "ok",
+                "result_type": "grouped",
+                "period": {"start_date": start_text, "end_date": end_text},
+                "metrics": list(query["metrics"]),
+                "group_by": group_by,
+                "rows": current_rows,
+                "comparison": {"type": "none", "period": None},
+            }
+
+        previous_rows = _calculate_grouped_bundle(
+            data, query, comparison_period[0], comparison_period[1]
+        )
+
+        def grouped_key(row: dict) -> tuple:
+            groups = row.get("groups", {})
+            return tuple(groups.get(dim, "") for dim in group_by)
+
+        previous_by_key = {
+            grouped_key(row): row for row in previous_rows
+        }
+        combined_rows = []
+        for row in current_rows:
+            previous = previous_by_key.get(grouped_key(row))
+            previous_metrics = (
+                deepcopy(previous.get("metrics", {}))
+                if previous is not None else {}
+            )
+            current_metrics = deepcopy(row.get("metrics", {}))
+            growth = {}
+            change = {}
+            for metric in query["metrics"]:
+                current_value = current_metrics.get(metric, 0)
+                previous_value = previous_metrics.get(metric, 0)
+                growth[metric] = _growth(current_value, previous_value)
+                change[metric] = current_value - previous_value
+
+            combined_rows.append({
+                "groups": deepcopy(row.get("groups", {})),
+                "metrics": current_metrics,
+                "comparison_metrics": previous_metrics,
+                "change": change,
+                "growth_pct": growth,
+            })
+
         return {
             "status": "ok",
-            "result_type": "grouped",
+            "result_type": "grouped_comparison",
             "period": {"start_date": start_text, "end_date": end_text},
             "metrics": list(query["metrics"]),
             "group_by": group_by,
-            "rows": rows,
+            "rows": combined_rows,
+            "comparison": {
+                "type": query.get("comparison", "none"),
+                "period": {
+                    "start_date": comparison_period[0],
+                    "end_date": comparison_period[1],
+                },
+            },
         }
 
     current, row_count = _calculate_metric_bundle(data, query, start_text, end_text)

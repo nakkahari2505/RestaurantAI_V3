@@ -38,6 +38,7 @@ SUPPORTED_PRESENTATIONS = {
     "text",
     "image_table",
     "chart",
+    "excel",
 }
 
 SUPPORTED_GROUPING_DIMENSIONS = {

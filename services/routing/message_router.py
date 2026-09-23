@@ -1759,7 +1759,29 @@ def route_message(
         return _build_text_response(product_master_answer)
 
     # =====================================================
-    # V2 CORE SEMANTIC PLANNER
+    # V3 PRODUCT CONTRACT: STANDARD MORNING REPORT FIRST
+    # =====================================================
+    # The board already uses the established V2 morning report. A simple
+    # company-level "yesterday sales" request must preserve that exact
+    # behaviour (Yesterday + MTD report) instead of being reduced by the
+    # generic semantic layer to one sales number. Filtered/dimensional
+    # yesterday questions are deliberately allowed to continue to V3.
+    yesterday_commands_early = {
+        "yesterday sales",
+        "yesterdays sales",
+        "yesterday sale",
+    }
+    if normalized_lower in yesterday_commands_early:
+        return _run_yesterday_sales()
+
+    yesterday_semantic_early = _try_yesterday_morning_report_semantic(
+        user_message=normalized_message
+    )
+    if yesterday_semantic_early is not None:
+        return yesterday_semantic_early
+
+    # =====================================================
+    # V3 CORE SEMANTIC PLANNER
     # =====================================================
     v2_response = _try_business_query_v2(
         user_message=normalized_message,

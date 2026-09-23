@@ -44,7 +44,7 @@ def _instructions(client_context: str, previous_query: dict | None) -> str:
     )
 
     return f"""
-You are the semantic planning layer of RestaurantAI V2.
+You are the semantic planning layer of RestaurantAI V3.
 Your job is NOT to answer the business question and NOT to calculate numbers.
 Translate the manager's natural WhatsApp language into one complete BusinessQuery.
 
@@ -230,10 +230,14 @@ GROUPING RULES
 - Preserve requested order for combined grouping.
 
 PRESENTATION
-- Use auto unless the user explicitly asks for a chart/image.
+- Use auto unless the user explicitly asks for a specific output format.
+- Explicit Excel/xlsx/spreadsheet/file-download wording => presentation=excel.
+- Explicit chart/graph/plot/visual trend wording => presentation=chart.
+- Explicit image/picture/table-image wording => presentation=image_table.
 - image_table is appropriate for dense store/channel breakdowns.
 - text is appropriate for short answers.
 - chart is appropriate for explicit trend/plot requests.
+- Presentation NEVER changes analytical meaning. First preserve the complete TIME × STORE × CHANNEL × KPI × OPERATION request, then choose how to show it.
 
 CLARIFICATION
 Ask only when the missing/ambiguous information materially changes the answer and cannot be safely
