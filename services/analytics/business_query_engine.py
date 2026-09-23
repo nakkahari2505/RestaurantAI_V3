@@ -649,6 +649,9 @@ def execute_business_query(data: dict, query: dict) -> dict:
         )
 
         if comparison_period is None:
+            company_total, _ = _calculate_metric_bundle(
+                data, query, start_text, end_text
+            )
             return {
                 "status": "ok",
                 "result_type": "grouped",
@@ -656,6 +659,7 @@ def execute_business_query(data: dict, query: dict) -> dict:
                 "metrics": list(query["metrics"]),
                 "group_by": group_by,
                 "rows": current_rows,
+                "company_total": company_total,
                 "comparison": {"type": "none", "period": None},
             }
 
@@ -694,6 +698,13 @@ def execute_business_query(data: dict, query: dict) -> dict:
                 "growth_pct": growth,
             })
 
+        company_total, _ = _calculate_metric_bundle(
+            data, query, start_text, end_text
+        )
+        comparison_total, _ = _calculate_metric_bundle(
+            data, query, comparison_period[0], comparison_period[1]
+        )
+
         return {
             "status": "ok",
             "result_type": "grouped_comparison",
@@ -701,6 +712,8 @@ def execute_business_query(data: dict, query: dict) -> dict:
             "metrics": list(query["metrics"]),
             "group_by": group_by,
             "rows": combined_rows,
+            "company_total": company_total,
+            "comparison_total": comparison_total,
             "comparison": {
                 "type": query.get("comparison", "none"),
                 "period": {

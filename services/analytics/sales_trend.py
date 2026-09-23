@@ -83,6 +83,12 @@ NUMBER_WORDS = {
     "four": 4,
     "five": 5,
     "six": 6,
+    "seven": 7,
+    "eight": 8,
+    "nine": 9,
+    "ten": 10,
+    "eleven": 11,
+    "twelve": 12,
 }
 
 
@@ -225,7 +231,7 @@ def _extract_month_count(
     )
 
     direct = re.search(
-        r"\blast\s+([1-9]\d*|one|two|three|four|five|six)\s+months?\b",
+        r"\blast\s+([1-9]\d*|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve)\s+months?\b",
         text,
     )
 
@@ -544,7 +550,7 @@ def get_sales_trend_report(
     Supported:
         Sales, Transactions, ADS, ADT, APT
         Company or one store
-        Last 1-6 completed calendar months
+        Last 1-12 completed calendar months
 
     Example on 18-Aug-2026:
         last 4 months -> Apr, May, Jun, Jul 2026
@@ -564,12 +570,12 @@ def get_sales_trend_report(
 
     if month_count is None:
         raise ValueError(
-            "Please specify the period as last 1 to 6 months."
+            "Please specify the period as last 1 to 12 months."
         )
 
-    if not 1 <= month_count <= 6:
+    if not 1 <= month_count <= 12:
         raise ValueError(
-            "Trend reports currently support only the last 1 to 6 completed calendar months."
+            "Trend reports currently support only the last 1 to 12 completed calendar months."
         )
 
     if "sales" not in data:
@@ -710,8 +716,16 @@ def get_sales_trend_report(
         ]["display_name"]
     )
 
+    normalized_message = _normalize(message)
+    explicit_bar = (
+        "bar chart" in normalized_message
+        or "bar graph" in normalized_message
+        or "barchart" in normalized_message
+    )
+
     return {
         "metric": metric,
+        "chart_type": "bar_chart" if explicit_bar else "line_chart",
         "metric_display": metric_display,
         "scope": scope_name,
         "month_count": month_count,

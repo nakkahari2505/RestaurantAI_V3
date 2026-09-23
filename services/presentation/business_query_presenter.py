@@ -83,6 +83,18 @@ def _tabular_rows(result: dict) -> tuple[list[str], list[list[str]]]:
                     _growth_text(row.get("growth_pct", {}).get(metric)),
                 ]
             rows_out.append(values)
+        if dimensions == ["store"] and result.get("company_total") is not None:
+            values = ["TOTAL"]
+            for metric in metrics:
+                current_value = result.get("company_total", {}).get(metric, 0)
+                previous_value = result.get("comparison_total", {}).get(metric, 0)
+                growth = None if previous_value == 0 else ((current_value - previous_value) / previous_value) * 100
+                values += [
+                    _metric_value(metric, current_value),
+                    _metric_value(metric, previous_value),
+                    _growth_text(growth),
+                ]
+            rows_out.append(values)
         return headers, rows_out
 
     for metric in metrics:
@@ -97,6 +109,14 @@ def _tabular_rows(result: dict) -> tuple[list[str], list[list[str]]]:
             primary = metrics[0] if metrics else "sales"
             values.append(_growth_text(row.get("growth_pct", {}).get(primary)))
         rows_out.append(values)
+    if dimensions == ["store"] and result.get("company_total") is not None:
+        total_values = ["TOTAL"] + [
+            _metric_value(metric, result.get("company_total", {}).get(metric, 0))
+            for metric in metrics
+        ]
+        if include_growth:
+            total_values.append("")
+        rows_out.append(total_values)
     return headers, rows_out
 
 
@@ -216,6 +236,17 @@ def _text_response(result: dict) -> dict:
                     piece += f" ({_growth_text(row.get('growth_pct', {}).get(metric))})"
                 pieces.append(piece)
             lines.append(f"{i}. *{label}* — " + " · ".join(pieces))
+        if dims == ["store"] and result.get("company_total") is not None:
+            pieces = []
+            for metric in metrics:
+                current_value = result.get("company_total", {}).get(metric, 0)
+                piece = f"{_metric_name(metric)} {_metric_value(metric, current_value)}"
+                if rt == "grouped_comparison":
+                    previous_value = result.get("comparison_total", {}).get(metric, 0)
+                    growth = None if previous_value == 0 else ((current_value - previous_value) / previous_value) * 100
+                    piece += f" vs {_metric_value(metric, previous_value)} ({_growth_text(growth)})"
+                pieces.append(piece)
+            lines += ["", "*TOTAL* — " + " · ".join(pieces)]
         return {"response_type": "text", "body": "\n".join(lines)}
 
     lines = [f"📊 *{_period_label(result['period'])}*", ""]

@@ -5,6 +5,7 @@ from uuid import uuid4
 
 from services.presentation.chart_engine import (
     render_line_chart,
+    render_bar_chart,
 )
 
 
@@ -56,24 +57,17 @@ def generate_sales_trend_image(
         f"{uuid4().hex}.png"
     )
 
-    return render_line_chart(
-        title=str(
-            report[
-                "title"
-            ]
-        ),
+    renderer = (
+        render_bar_chart
+        if str(report.get("chart_type", "line_chart")).lower() == "bar_chart"
+        else render_line_chart
+    )
+
+    return renderer(
+        title=str(report["title"]),
         labels=labels,
         values=values,
-        metric_name=str(
-            report[
-                "metric"
-            ]
-        ),
-        subtitle=str(
-            report.get(
-                "subtitle",
-                "",
-            )
-        ),
+        metric_name=str(report["metric"]),
+        subtitle=str(report.get("subtitle", "")),
         file_name=file_name,
     )
