@@ -5,6 +5,7 @@ import difflib
 import re
 from dataclasses import dataclass
 from datetime import timedelta
+from decimal import Decimal, ROUND_HALF_UP
 from pathlib import Path
 
 import pandas as pd
@@ -28,11 +29,27 @@ def num(value):
 
 
 def qty(value):
-    return f"{value:,.2f}".rstrip("0").rstrip(".")
+    rounded = Decimal(str(value)).quantize(Decimal("0.1"), rounding=ROUND_HALF_UP)
+    return f"{rounded:,.1f}"
+
+
+def daily_rate(value):
+    # Tiny daily use must remain visible in the buying trigger.
+    return f"{value:.2f}" if 0 < abs(value) < .1 else qty(value)
 
 
 def money(value):
-    return f"₹{value:,.2f}"
+    rounded = str(Decimal(str(value)).quantize(Decimal("1"), rounding=ROUND_HALF_UP))
+    sign = "-" if rounded.startswith("-") else ""
+    digits = rounded.lstrip("-")
+    if len(digits) > 3:
+        head, tail = digits[:-3], digits[-3:]
+        groups = []
+        while head:
+            groups.append(head[-2:])
+            head = head[:-2]
+        digits = ",".join(reversed(groups)) + "," + tail
+    return f"₹{sign}{digits}"
 
 
 @dataclass
@@ -106,10 +123,47 @@ class Inventory:
         for index, (_, stock, item, cover) in enumerate(rows[:limit], 1):
             unit = item["Unit"]
             flag = " (negative recorded stock: verify)" if stock < 0 else ""
-            lines.append(f'{index}. {item["Item Name"]} [{item["Item_Code"]}]: {qty(stock)} {unit}; {qty(item["Avg Daily Consumption"])} {unit}/day; {cover:.1f} days cover vs {qty(item["Lead Time"])} days lead{flag}.')
+            lines.append(f'{index}. {item["Item Name"]}: {qty(stock)} {unit}; {daily_rate(item["Avg Daily Consumption"])} {unit}/day; {cover:.1f} days cover vs {qty(item["Lead Time"])} days lead{flag}.')
         return (f"Buying priorities as of {self.latest_date:%d %b %Y}:\n" +
                 ("\n".join(lines) if lines else "No items with valid consumption and lead time are below lead-time cover.") +
                 "\nBased on recorded stock, average consumption and lead time. Check pending orders and physical stock before ordering.")
+
+    def movement_answer(self, question):
+        q = norm(question)
+        purchase = bool(re.search(r"\b(purchase|purchases|purchased)\b", q))
+        field = "Purchase Value" if purchase else "Issueing Value"
+        label = "Purchase" if purchase else "Issue"
+        days_match = re.search(r"\b(?:last|past|previous|for)\s+(\d{1,3})\s+days?\b", q)
+        if not days_match:
+            days_match = re.search(r"\b(\d{1,3})\s+days?\b", q)
+        days = int(days_match.group(1)) if days_match else None
+        if days is not None and not 1 <= days <= 90:
+            return "Please choose a trend period between 1 and 90 days."
+        start = (self.latest_date - timedelta(days=days-1) if days is not None
+                 else self.latest_date.replace(day=1))
+        frame = self.daily[(self.daily.Date >= start) & (self.daily.Date <= self.latest_date)]
+        total = frame[field].fillna(0).sum()
+        span = (self.latest_date-start).days+1
+        period = f"{start:%d %b}–{self.latest_date:%d %b %Y}"
+        # A specifically requested day-count trend is a dated daily series.
+        if days is not None and "trend" in q:
+            daily = frame.groupby("Date")[field].sum()
+            lines = [f"{day:%d %b %Y} | {money(daily.get(day, 0))}"
+                     for day in (start + timedelta(days=i) for i in range(span))]
+            return (f"{label} trend ({period}; INR):\nDate | Value\n" +
+                    "\n".join(lines) + f"\nTotal: {money(total)}")
+        if "average" in q and "trend" not in q and not re.search(r"\b(how|doing|performance)\b", q):
+            return f"Average daily {label.lower()} value: {money(total/span)} over {span} calendar days ({period}); total {money(total)}."
+        if "trend" in q or re.search(r"\b(how|doing|performance)\b", q):
+            by_item = frame.groupby("Item_Code")[field].sum().sort_values(ascending=False).head(5)
+            names = self.items.set_index("Item_Code")["Item Name"]
+            top = [f"{i}. {names.get(code, code)}: {money(value)}"
+                   for i, (code, value) in enumerate(by_item.items(), 1) if value > 0]
+            return (f"{label} this period ({period}; INR):\n"
+                    f"Total: {money(total)}\nAverage per day: {money(total/span)}\n"
+                    f"Top 5 items by {label.lower()} value:\n" +
+                    ("\n".join(top) if top else "No recorded movement."))
+        return f"Total {label.lower()} value: {money(total)} ({period}; INR)."
 
     def answer(self, question):
         q = norm(question)
@@ -120,16 +174,8 @@ class Inventory:
             latest = self._latest()
             count = int(((latest["Closing Qty"] > 0) & (latest["Closing value"].fillna(0) == 0)).sum())
             return f"Recorded total closing stock value: {money(latest['Closing value'].sum())} {stamp} (all items; INR). {count} items have positive quantity but zero/blank closing value; verify their valuation."
-        if re.search(r"\b(purchase|purchases|issue|issues|issuing)\b", q) and ("month" in q or "mtd" in q or "7 days" in q or "seven days" in q):
-            field = "Purchase Value" if "purchase" in q else "Issueing Value"
-            label = "Purchase" if field == "Purchase Value" else "Issue"
-            start = self.latest_date - timedelta(days=6) if "7 days" in q or "seven days" in q else self.latest_date.replace(day=1)
-            subset = self.daily[(self.daily.Date >= start) & (self.daily.Date <= self.latest_date)]
-            total = subset[field].fillna(0).sum()
-            days = (self.latest_date-start).days+1
-            if "average" in q:
-                return f"Average daily {label.lower()} value: {money(total/days)} over {days} calendar days ({start:%d %b}–{self.latest_date:%d %b %Y}); total {money(total)}."
-            return f"Total {label.lower()} value: {money(total)} ({start:%d %b}–{self.latest_date:%d %b %Y}; INR)."
+        if re.search(r"\b(purchase|purchases|purchased|issue|issues|issuing)\b", q):
+            return self.movement_answer(question)
         matched, error = self._matches(question)
         if error:
             return error
@@ -147,7 +193,7 @@ class Inventory:
             stock = num(row["Closing Qty"])
             value = num(row["Closing value"])
             unit = item["Unit"]
-            prefix = f'{item["Item Name"]} [{code}]'
+            prefix = str(item["Item Name"])
             if vendor:
                 price = num(item["Price"])
                 lines.append(f'{prefix}: {item["Vendor Name"] if pd.notna(item["Vendor Name"]) else "vendor unrecorded"}; listed price {money(price) + " per " + str(unit) if price is not None else "unrecorded"}.')
@@ -158,7 +204,7 @@ class Inventory:
                 elif stock < 0:
                     lines.append(f"{prefix}: {qty(stock)} {unit}; negative recorded stock, verify urgently. Days cover unavailable.")
                 else:
-                    lines.append(f"{prefix}: {qty(stock)} {unit} ÷ {qty(use)} {unit}/day = {stock/use:.1f} days cover.")
+                    lines.append(f"{prefix}: {qty(stock)} {unit} ÷ {daily_rate(use)} {unit}/day = {stock/use:.1f} days cover.")
             else:
                 lines.append(f"{prefix}: {qty(stock) if stock is not None else 'unrecorded'} {unit}; closing value {money(value) if value is not None else 'unrecorded'}.")
         if not vendor and not cover and len(matched) > 1:
