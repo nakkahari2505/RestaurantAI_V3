@@ -25,7 +25,7 @@ def answer_inventory_whatsapp(message: str) -> str | None:
     contextual = bool(re.search(
         r"\bhow (much|many)\b.*\b(have|left|available)\b|"
         r"\bhow long\b.*\blast\b|\bwhere\b.*\bbuy\b|"
-        r"\bwhat should i order\b|\bprice\b", q))
+        r"\bwhat should i order\b|\b(burning items|urgent items|running out|need to buy)\b|\bprice\b", q))
     if not (explicit or contextual):
         return None
     if not WORKBOOK.exists():

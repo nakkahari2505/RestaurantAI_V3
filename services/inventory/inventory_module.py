@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import difflib
+import math
 import re
 from dataclasses import dataclass
 from datetime import timedelta
@@ -113,20 +114,30 @@ class Inventory:
             code = item["Item_Code"]
             stock = num(current.loc[code, "Closing Qty"])
             use, lead = num(item["Avg Daily Consumption"]), num(item["Lead Time"])
+            moq, price = num(item["MOQ"]), num(item["Price"])
             if stock is None or use is None or use <= 0 or lead is None or lead < 0:
                 continue
             cover = max(0, stock) / use
-            if stock <= 0 or cover <= lead:
-                rows.append((cover-lead, stock, item, cover))
-        rows.sort(key=lambda r: (r[0], r[1], str(r[2]["Item Name"])))
+            shortage = lead*use - stock
+            if shortage <= 0 and stock > 0:
+                continue
+            # Replenish to two lead-time cycles of cover. MOQ is a minimum,
+            # not assumed to be a pack-size multiple.
+            target = 2*max(lead, 1)*use
+            suggested = max(target-stock, moq if moq is not None and moq > 0 else 0)
+            discrete = norm(item["Unit"]) in {"pc", "pcs", "pkt", "pack", "packet", "no", "nos", "bottles", "gallon"}
+            suggested = math.ceil(suggested) if discrete else math.ceil(suggested*10-1e-9)/10
+            exposure = max(shortage, 0)*(price if price is not None and price > 0 else 0)
+            rows.append((exposure, shortage, stock, item, cover, suggested))
+        rows.sort(key=lambda r: (-r[0], -r[1], str(r[3]["Item Name"])))
         lines = []
-        for index, (_, stock, item, cover) in enumerate(rows[:limit], 1):
+        for index, (_, _, stock, item, cover, suggested) in enumerate(rows[:limit], 1):
             unit = item["Unit"]
-            flag = " (negative recorded stock: verify)" if stock < 0 else ""
-            lines.append(f'{index}. {item["Item Name"]}: {qty(stock)} {unit}; {daily_rate(item["Avg Daily Consumption"])} {unit}/day; {cover:.1f} days cover vs {qty(item["Lead Time"])} days lead{flag}.')
+            flag = " Verify negative stock." if stock < 0 else ""
+            lines.append(f'{index}. {item["Item Name"]}: stock {qty(stock)} {unit}; lead {qty(item["Lead Time"])} days; use {daily_rate(item["Avg Daily Consumption"])} {unit}/day; order {qty(suggested)} {unit}.{flag}')
         return (f"Buying priorities as of {self.latest_date:%d %b %Y}:\n" +
                 ("\n".join(lines) if lines else "No items with valid consumption and lead time are below lead-time cover.") +
-                "\nBased on recorded stock, average consumption and lead time. Check pending orders and physical stock before ordering.")
+                "\nSuggested quantity targets two lead-time cycles of demand, with MOQ as a minimum. Ranked by projected lead-time shortage value; negative stock is flagged. Check pending orders and physical stock before buying.")
 
     def movement_answer(self, question):
         q = norm(question)
@@ -172,7 +183,7 @@ class Inventory:
     def answer(self, question):
         q = norm(question)
         stamp = f"as of {self.latest_date:%d %b %Y}"
-        if re.search(r"\b(what|which)\b.*\border\b|\b(reorder|buying priorities|order now)\b", q):
+        if re.search(r"\b(what|which)\b.*\border\b|\b(reorder|buying priorities|order now|running out|burning items|urgent items|need to buy)\b", q):
             return self.reorder()
         if re.search(r"\b(total|overall|entire|all)\b", q) and ("stock" in q or "closing" in q) and "value" in q:
             latest = self._latest()
