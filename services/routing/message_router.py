@@ -1743,6 +1743,11 @@ def route_message(
             "Please send a restaurant business question."
         )
 
+    from services.inventory.whatsapp_inventory import answer_inventory_whatsapp
+    inventory_text = answer_inventory_whatsapp(normalized_message)
+    if inventory_text is not None:
+        return _build_text_response(inventory_text)
+
     # Product-master questions are deterministic and must be checked
     # before the semantic/RAL pipeline. The lookup itself owns detection
     # for MRP / price / COGS / cost / gross-margin wording and typo variants.
