@@ -13,7 +13,7 @@ import pandas as pd
 
 MASTER = {"Item_Code", "Item Name", "Item Raw Name", "Vendor Name", "Unit", "Price", "MOQ", "Lead Time", "Avg Daily Consumption"}
 MOVEMENT = {"Date", "Item_Code", "Opening Qty", "Opening Value", "Purchase Qty", "Purchase Value", "Issueing Qty", "Issueing Value", "Closing Qty", "Closing value"}
-NOISE = set("how much many of the my our is are do i we have there in as now current stock quantity value days will last for what where buy buying from at which who supplies supplier vendor price per kg kgs ltr litre litres warehouse available and should order me give to tell please this long does it today remaining".split())
+NOISE = set("how much many of the my our is are do i we have there in as now current stock closing quantity value days will last for what where buy buying from at which who supplies supplier vendor price per kg kgs ltr litre litres warehouse available and should order me give to tell please this long does it today remaining ly".split())
 
 
 def norm(value):
@@ -107,6 +107,17 @@ class Inventory:
     def _latest(self):
         return self.daily[self.daily.Date == self.latest_date].set_index("Item_Code")
 
+    def total_stock_answer(self, warehouse=False):
+        latest = self._latest()
+        count = int(((latest["Closing Qty"] > 0) & (latest["Closing value"].fillna(0) == 0)).sum())
+        answer = (f"Total recorded closing stock value: {money(latest['Closing value'].sum())} "
+                  f"as of {self.latest_date:%d %b %Y} (INR).")
+        if count:
+            answer += f" {count} items have positive quantity but zero/blank closing value; verify their valuation."
+        if warehouse:
+            answer += " The workbook has no location field, so this is overall stock, not a warehouse-only figure."
+        return answer
+
     def reorder(self, limit=5):
         current = self._latest()
         rows = []
@@ -185,10 +196,11 @@ class Inventory:
         stamp = f"as of {self.latest_date:%d %b %Y}"
         if re.search(r"\b(what|which)\b.*\border\b|\b(reorder|buying priorities|order now|running out|burning items|urgent items|need to buy)\b", q):
             return self.reorder()
-        if re.search(r"\b(total|overall|entire|all)\b", q) and ("stock" in q or "closing" in q) and "value" in q:
-            latest = self._latest()
-            count = int(((latest["Closing Qty"] > 0) & (latest["Closing value"].fillna(0) == 0)).sum())
-            return f"Recorded total closing stock value: {money(latest['Closing value'].sum())} {stamp} (all items; INR). {count} items have positive quantity but zero/blank closing value; verify their valuation."
+        if ("stock" in q or "closing" in q) and (
+            not item_phrase(question) or
+            (re.search(r"\b(total|overall|entire|all)\b", q) and "value" in q)
+        ):
+            return self.total_stock_answer("warehouse" in q)
         if re.search(r"\b(purchase|purchases|purchased|issue|issues|issuing)\b", q):
             return self.movement_answer(question)
         matched, error = self._matches(question)
