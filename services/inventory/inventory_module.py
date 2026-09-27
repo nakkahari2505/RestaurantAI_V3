@@ -137,6 +137,8 @@ class Inventory:
         if not days_match:
             days_match = re.search(r"\b(\d{1,3})\s+days?\b", q)
         days = int(days_match.group(1)) if days_match else None
+        if days is None and re.search(r"\b(?:last|past|previous|for)\s+(?:(?:one|1)\s+)?weeks?\b|\b(?:last|past|previous)\s+seven\s+days?\b", q):
+            days = 7
         if days is not None and not 1 <= days <= 90:
             return "Please choose a trend period between 1 and 90 days."
         start = (self.latest_date - timedelta(days=days-1) if days is not None
@@ -156,12 +158,14 @@ class Inventory:
             return f"Average daily {label.lower()} value: {money(total/span)} over {span} calendar days ({period}); total {money(total)}."
         if "trend" in q or re.search(r"\b(how|doing|performance)\b", q):
             by_item = frame.groupby("Item_Code")[field].sum().sort_values(ascending=False).head(5)
-            names = self.items.set_index("Item_Code")["Item Name"]
-            top = [f"{i}. {names.get(code, code)}: {money(value)}"
+            details = self.items.set_index("Item_Code")
+            qty_field = "Purchase Qty" if purchase else "Issueing Qty"
+            quantities = frame.groupby("Item_Code")[qty_field].sum()
+            top = [f'{i}. {details.loc[code, "Item Name"]}: {qty(quantities.get(code, 0))} {details.loc[code, "Unit"]} ({money(value)})'
                    for i, (code, value) in enumerate(by_item.items(), 1) if value > 0]
             return (f"{label} this period ({period}; INR):\n"
                     f"Total: {money(total)}\nAverage per day: {money(total/span)}\n"
-                    f"Top 5 items by {label.lower()} value:\n" +
+                    f"Top 5 items by {label.lower()} value (quantity and value):\n" +
                     ("\n".join(top) if top else "No recorded movement."))
         return f"Total {label.lower()} value: {money(total)} ({period}; INR)."
 
