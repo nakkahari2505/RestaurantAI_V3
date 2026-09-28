@@ -13,7 +13,7 @@ import pandas as pd
 
 MASTER = {"Item_Code", "Item Name", "Item Raw Name", "Vendor Name", "Unit", "Price", "MOQ", "Lead Time", "Avg Daily Consumption"}
 MOVEMENT = {"Date", "Item_Code", "Opening Qty", "Opening Value", "Purchase Qty", "Purchase Value", "Issueing Qty", "Issueing Value", "Closing Qty", "Closing value"}
-NOISE = set("how much many of the my our is are do i we have there in as now current stock closing quantity value days will last for what where buy buying from at which who supplies supplier vendor price per kg kgs ltr litre litres warehouse available and should order me give to tell please this long does it today remaining ly".split())
+NOISE = set("how much many of the my our is are was were did do i we have there in as now current stock closing inventory quantity value days will last for what where buy buying from at which who supplies supplier vendor price per kg kgs ltr litre litres warehouse available and should order me give to tell please this long does it today remaining ly a an average daily consumption trend opening purchase purchased purchases issue issued issuing monthly month mtd last past previous week weeks day date total overall entire all worth cost one seven latest recorded doing performance".split())
 
 
 def norm(value):
@@ -21,7 +21,42 @@ def norm(value):
 
 
 def item_phrase(question):
-    return " ".join(w for w in norm(question).split() if w not in NOISE and not w.isdigit())
+    words = [w for w in norm(question).split() if w not in NOISE and not w.isdigit()]
+    # Singular/plural forms are ordinary variants in WhatsApp stock questions.
+    return " ".join(w[:-3] + "y" if w.endswith("ies") and len(w) > 4
+                    else w[:-1] if w.endswith("s") and len(w) > 3 and not w.endswith("ss")
+                    else w for w in words)
+
+
+@dataclass(frozen=True)
+class InventoryIntent:
+    kind: str
+    explicit: bool
+
+
+def classify_inventory_intent(question: str) -> InventoryIntent | None:
+    q = norm(question)
+    if re.search(r"\b(sales|transaction|revenue|ads|adt|apt)\b", q):
+        return None
+    if re.search(r"\b(reorder|order|burning items|urgent items|running out|need to buy|buying priorities)\b", q):
+        return InventoryIntent("buying", True)
+    if re.search(r"\b(purchase|purchases|purchased|issue|issues|issued|issuing)\b", q):
+        return InventoryIntent("movement", True)
+    if re.search(r"\b(consumption|consumed)\b", q):
+        return InventoryIntent("consumption", True)
+    if re.search(r"\bopening\b", q):
+        return InventoryIntent("opening", True)
+    supplier = bool(re.search(r"\b(supplier|vendor|price)\b|\b(buy|buying)\b.*\bfrom\b|\bwhere\b.*\b(buy|buying)\b", q))
+    if supplier:
+        explicit = bool(re.search(r"\b(supplier|vendor)\b|\b(buy|buying)\b.*\bfrom\b|\bwhere\b.*\b(buy|buying)\b", q))
+        return InventoryIntent("supplier", explicit)
+    if re.search(r"\b(cover|last how long|how long.*last|days.*last|last.*days)\b", q):
+        return InventoryIntent("cover", True)
+    if re.search(r"\b(stock|closing|inventory|warehouse)\b", q):
+        return InventoryIntent("stock", True)
+    if re.search(r"\bhow (much|many)\b|\b(have|left|available)\b.*\b(how much|how many)\b", q):
+        return InventoryIntent("stock", False)
+    return None
 
 
 def num(value):
@@ -75,7 +110,8 @@ class Inventory:
             raise ValueError("Stock_Data contains item codes absent from Item_Master.")
         for col in ("Opening Qty", "Opening Value", "Purchase Qty", "Purchase Value",
                     "Issueing Qty", "Issueing Value", "Closing Qty", "Closing value"):
-            daily[col] = pd.to_numeric(daily[col].replace("-", 0), errors="coerce")
+            values = daily[col].map(lambda value: 0 if isinstance(value, str) and value.strip() == "-" else value)
+            daily[col] = pd.to_numeric(values, errors="coerce")
         for col in ("Price", "MOQ", "Lead Time", "Avg Daily Consumption"):
             master[col] = pd.to_numeric(master[col], errors="coerce")
         latest = daily.Date.max()
@@ -83,7 +119,7 @@ class Inventory:
             raise ValueError("Latest stock date does not include every master item.")
         return cls(master, daily, latest, str(path))
 
-    def _matches(self, question):
+    def _matches(self, question, *, implicit=False):
         phrase = item_phrase(question)
         if not phrase:
             return [], "Please name the inventory item."
@@ -96,16 +132,28 @@ class Inventory:
         if not matched:
             scored = []
             for i, pair in enumerate(names):
-                tokens = [pair[0], pair[1], *pair[0].split(), *pair[1].split()]
+                tokens = [pair[0], pair[1]]
+                if len(needle.split()) == 1:
+                    tokens += [*pair[0].split(), *pair[1].split()]
                 scored.append((max(difflib.SequenceMatcher(None, needle, t).ratio() for t in tokens if t), i))
             best = max(s for s, _ in scored)
-            if best < .73:
+            threshold = .86 if implicit else .78
+            if best < threshold:
                 return [], f"I couldn't confidently match '{phrase}' to an inventory item."
-            matched = [i for s, i in scored if s >= max(.73, best-.055)]
+            matched = [i for s, i in scored if s >= max(threshold, best-.04)]
+        # "Rice" covers food rice and decorative sprinkle products in this
+        # master. A shared word is not sufficient evidence for one stock family.
+        if needle == "rice" and any("sprinkl" in names[i][0] for i in matched) and any(
+            "sprinkl" not in names[i][0] for i in matched
+        ):
+            return [], "Which rice do you mean: Sonamasuri/Basmathi cooking rice, or decorative sprinkle rice? Please name the variety."
         return self.items.iloc[matched].to_dict("records"), None
 
     def _latest(self):
         return self.daily[self.daily.Date == self.latest_date].set_index("Item_Code")
+
+    def _category_items(self, phrase):
+        return self.items.loc[self.items.Category.map(norm) == norm(phrase)].to_dict("records")
 
     def total_stock_answer(self, warehouse=False):
         latest = self._latest()
@@ -166,22 +214,55 @@ class Inventory:
         start = (self.latest_date - timedelta(days=days-1) if days is not None
                  else self.latest_date.replace(day=1))
         frame = self.daily[(self.daily.Date >= start) & (self.daily.Date <= self.latest_date)]
+        item_text = item_phrase(question)
+        selected = []
+        if item_text:
+            category_items = self._category_items(item_text)
+            if category_items:
+                frame = frame[frame.Item_Code.isin(x["Item_Code"] for x in category_items)]
+            else:
+                selected, error = self._matches(question)
+                if error:
+                    return error
+            if re.search(r"\b(kgs?|kilograms?)\b", q):
+                selected = [x for x in selected if norm(x["Unit"]) == "kg"]
+                if not selected and not category_items:
+                    return "No matching inventory items are recorded in KG."
+            if selected:
+                frame = frame[frame.Item_Code.isin(x["Item_Code"] for x in selected)]
         total = frame[field].fillna(0).sum()
+        qty_field = "Purchase Qty" if purchase else "Issueing Qty"
+        movement_qty = frame[qty_field].fillna(0).sum()
+        if not selected and re.search(r"\b(qty|quantity|kgs?|litres?|units?)\b", q):
+            return "Quantities use different units across items. Name an item or specify a compatible unit."
         span = (self.latest_date-start).days+1
         period = f"{start:%d %b}–{self.latest_date:%d %b %Y}"
         # A specifically requested day-count trend is a dated daily series.
         if days is not None and "trend" in q:
-            daily = frame.groupby("Date")[field].sum()
-            lines = [f"{day:%d %b %Y} | {money(daily.get(day, 0))}"
+            quantity_trend = bool(selected and re.search(r"\b(qty|quantity|kgs?|litres?|units?)\b", q))
+            trend_field = qty_field if quantity_trend else field
+            daily = frame.groupby("Date")[trend_field].sum()
+            fmt = qty if quantity_trend else money
+            lines = [f"{day:%d %b %Y} | {fmt(daily.get(day, 0))}"
                      for day in (start + timedelta(days=i) for i in range(span))]
-            return (f"{label} trend ({period}; INR):\nDate | Value\n" +
-                    "\n".join(lines) + f"\nTotal: {money(total)}")
+            unit = selected[0]["Unit"] if selected and len({x["Unit"] for x in selected}) == 1 else "units"
+            header = f"Quantity ({unit})" if quantity_trend else "Value (INR)"
+            sum_text = f"{qty(movement_qty)} {unit}" if quantity_trend else money(total)
+            return (f"{label} trend ({period}):\nDate | {header}\n" +
+                    "\n".join(lines) + f"\nTotal: {sum_text}")
+        if selected:
+            units = {str(x["Unit"]) for x in selected}
+            if len(units) != 1:
+                return (f"{label} for matching items ({period}): value {money(total)}. "
+                        "Their units differ, so quantities cannot be added; name a variety or unit for a quantity.")
+            unit_note = f"{qty(movement_qty)} {next(iter(units))}; "
+            names = ", ".join(dict.fromkeys(str(x["Item Name"]) for x in selected))
+            return f"{label} for {names} ({period}): {unit_note}value {money(total)}."
         if "average" in q and "trend" not in q and not re.search(r"\b(how|doing|performance)\b", q):
             return f"Average daily {label.lower()} value: {money(total/span)} over {span} calendar days ({period}); total {money(total)}."
         if "trend" in q or re.search(r"\b(how|doing|performance)\b", q):
             by_item = frame.groupby("Item_Code")[field].sum().sort_values(ascending=False).head(5)
             details = self.items.set_index("Item_Code")
-            qty_field = "Purchase Qty" if purchase else "Issueing Qty"
             quantities = frame.groupby("Item_Code")[qty_field].sum()
             top = [f'{i}. {details.loc[code, "Item Name"]}: {qty(quantities.get(code, 0))} {details.loc[code, "Unit"]} ({money(value)})'
                    for i, (code, value) in enumerate(by_item.items(), 1) if value > 0]
@@ -191,18 +272,63 @@ class Inventory:
                     ("\n".join(top) if top else "No recorded movement."))
         return f"Total {label.lower()} value: {money(total)} ({period}; INR)."
 
+    def consumption_answer(self, question):
+        q = norm(question)
+        matched, error = self._matches(question)
+        if error:
+            return error
+        if len(matched) > 5:
+            names = ", ".join(dict.fromkeys(str(x["Item Name"]) for x in matched[:7]))
+            return f"Which item or variety do you mean? The workbook has: {names}. Please name one more specifically."
+        if "trend" not in q:
+            lines = []
+            for item in matched:
+                use = num(item["Avg Daily Consumption"])
+                lines.append(f'{item["Item Name"]}: {daily_rate(use)} {item["Unit"]}/day.' if use is not None
+                             else f'{item["Item Name"]}: average daily consumption not recorded.')
+            return f"Recorded average daily consumption (master data; stock as of {self.latest_date:%d %b %Y}):\n" + "\n".join(lines)
+        days_match = re.search(r"\b(\d{1,3})\s+days?\b", q)
+        days = int(days_match.group(1)) if days_match else 7
+        if not 1 <= days <= 90:
+            return "Please choose a consumption trend period between 1 and 90 days."
+        start = self.latest_date - timedelta(days=days-1)
+        lines = []
+        for item in matched:
+            frame = self.daily[(self.daily.Item_Code == item["Item_Code"]) &
+                               (self.daily.Date >= start) & (self.daily.Date <= self.latest_date)]
+            by_day = frame.set_index("Date")["Issueing Qty"].fillna(0)
+            recorded = num(item["Avg Daily Consumption"])
+            lines.append(f'{item["Item Name"]} ({item["Unit"]}; recorded average {daily_rate(recorded) if recorded is not None else "unavailable"}/day):')
+            lines.extend(f"{day:%d %b} | {qty(by_day.get(day, 0))}"
+                         for day in (start+timedelta(days=i) for i in range(days)))
+        assumed = " (7 days assumed)" if not days_match else ""
+        return f"Actual issue quantity by date, {start:%d %b}–{self.latest_date:%d %b %Y}{assumed}:\nDate | Quantity\n" + "\n".join(lines)
+
     def answer(self, question):
         q = norm(question)
         stamp = f"as of {self.latest_date:%d %b %Y}"
-        if re.search(r"\b(what|which)\b.*\border\b|\b(reorder|buying priorities|order now|running out|burning items|urgent items|need to buy)\b", q):
+        intent = classify_inventory_intent(question)
+        if intent is None:
+            return "Please ask an inventory question."
+        if intent.kind == "buying":
             return self.reorder()
-        if ("stock" in q or "closing" in q) and (
-            not item_phrase(question) or
-            (re.search(r"\b(total|overall|entire|all)\b", q) and "value" in q)
-        ):
-            return self.total_stock_answer("warehouse" in q)
-        if re.search(r"\b(purchase|purchases|purchased|issue|issues|issuing)\b", q):
+        if intent.kind == "movement":
             return self.movement_answer(question)
+        if intent.kind == "consumption":
+            return self.consumption_answer(question)
+        if intent.kind in {"stock", "opening"} and not item_phrase(question):
+            if intent.kind == "opening":
+                latest = self._latest()
+                return f"Total recorded opening stock value: {money(latest['Opening Value'].fillna(0).sum())} {stamp} (INR)."
+            return self.total_stock_answer("warehouse" in q)
+        if intent.kind == "stock":
+            category = self._category_items(item_phrase(question))
+            if category:
+                current = self._latest()
+                codes = [x["Item_Code"] for x in category]
+                return (f"{category[0]['Category']} closing stock value: "
+                        f"{money(current.loc[codes, 'Closing value'].fillna(0).sum())} {stamp} "
+                        f"({len(codes)} items; INR). Quantities have different units.")
         matched, error = self._matches(question)
         if error:
             return error
@@ -211,8 +337,8 @@ class Inventory:
             if not matched:
                 return "No matching inventory items are recorded in KG."
         current = self._latest()
-        vendor = bool(re.search(r"\b(vendor|supplier|buy|buying|price|where)\b", q))
-        cover = bool(re.search(r"\b(days|last|cover|how long)\b", q))
+        vendor = intent.kind == "supplier"
+        cover = intent.kind == "cover"
         lines = []
         for item in matched:
             code = item["Item_Code"]
@@ -233,7 +359,12 @@ class Inventory:
                 else:
                     lines.append(f"{prefix}: {qty(stock)} {unit} ÷ {daily_rate(use)} {unit}/day = {stock/use:.1f} days cover.")
             else:
-                lines.append(f"{prefix}: {qty(stock) if stock is not None else 'unrecorded'} {unit}; closing value {money(value) if value is not None else 'unrecorded'}.")
+                if intent.kind == "opening":
+                    stock, value = num(row["Opening Qty"]), num(row["Opening Value"])
+                    label = "opening"
+                else:
+                    label = "closing"
+                lines.append(f"{prefix}: {qty(stock) if stock is not None else 'unrecorded'} {unit}; {label} value {money(value) if value is not None else 'unrecorded'}.")
         if not vendor and not cover and len(matched) > 1:
             units = {str(x["Unit"]) for x in matched}
             if len(units) == 1:

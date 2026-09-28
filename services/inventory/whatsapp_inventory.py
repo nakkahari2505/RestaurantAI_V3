@@ -1,11 +1,10 @@
 """Inventory branch of the existing V3 WhatsApp message router."""
 from __future__ import annotations
 
-import re
 from functools import lru_cache
 from pathlib import Path
 
-from services.inventory.inventory_module import Inventory, norm
+from services.inventory.inventory_module import Inventory, classify_inventory_intent
 
 WORKBOOK = Path(__file__).resolve().parents[2] / "data" / "auberry" / "inventory.xlsx"
 
@@ -16,26 +15,19 @@ def _load(path: str, modified_ns: int):
 
 
 def answer_inventory_whatsapp(message: str) -> str | None:
-    q = norm(message)
-    if re.search(r"\b(sales|transaction|revenue|ads|adt|apt)\b", q):
-        return None
-    explicit = bool(re.search(
-        r"\b(inventory|stock|closing|warehouse|reorder|purchase|purchases|"
-        r"issue|issues|issuing|consumption|supplier|vendor|buying|lead time)\b", q))
-    contextual = bool(re.search(
-        r"\bhow (much|many)\b.*\b(have|left|available)\b|"
-        r"\bhow long\b.*\blast\b|\bwhere\b.*\bbuy\b|"
-        r"\bwhat should i order\b|\b(burning items|urgent items|running out|need to buy)\b|\bprice\b", q))
-    if not (explicit or contextual):
+    intent = classify_inventory_intent(message)
+    if intent is None:
         return None
     if not WORKBOOK.exists():
-        return "Inventory data is unavailable: data/auberry/inventory.xlsx is missing." if explicit else None
+        return "Inventory data is unavailable: data/auberry/inventory.xlsx is missing." if intent.explicit else None
     try:
         inventory = _load(str(WORKBOOK), WORKBOOK.stat().st_mtime_ns)
     except (OSError, ValueError, KeyError) as exc:
         return f"Inventory data could not be read: {exc}"
-    if not explicit and "price" in q:
-        matches, error = inventory._matches(message)
+    if not intent.explicit:
+        matches, error = inventory._matches(message, implicit=True)
+        if error and error.startswith("Which rice"):
+            return error
         if error or not matches:
             return None
     return inventory.answer(message)
