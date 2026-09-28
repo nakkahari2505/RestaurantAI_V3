@@ -104,8 +104,50 @@ class Inventory:
         if master.Item_Code.isna().any() or master.Item_Code.duplicated().any():
             raise ValueError("Item_Master must have unique, nonblank Item_Code values.")
         daily["Date"] = pd.to_datetime(daily["Date"], errors="coerce").dt.date
-        if daily.Date.isna().any() or daily[["Date", "Item_Code"]].duplicated().any():
-            raise ValueError("Stock_Data requires valid dates and one row per date and item code.")
+        if daily.Date.isna().any():
+            raise ValueError("Stock_Data requires valid dates.")
+        # Resolve copied codes for repeated item names by the master sheet's
+        # item order, which is also the row order in Stock_Data.
+        if daily[["Date", "Item_Code"]].duplicated().any() and "Item Name" in daily:
+            for date in daily.loc[daily[["Date", "Item_Code"]].duplicated(keep=False), "Date"].unique():
+                day = daily.loc[daily.Date == date]
+                for name in day.loc[day.Item_Code.duplicated(keep=False), "Item Name"].map(norm).unique():
+                    rows = day.index[day["Item Name"].map(norm) == name].tolist()
+                    codes = master.loc[master["Item Name"].map(norm) == name, "Item_Code"].tolist()
+                    if len(rows) != len(codes) or len(set(codes)) != len(codes):
+                        continue
+                    other_codes = set(day.loc[~day.index.isin(rows), "Item_Code"])
+                    if other_codes.intersection(codes):
+                        continue
+                    for index, code in zip(rows, codes):
+                        daily.at[index, "Item_Code"] = code
+            # A mistyped name may hide a remaining duplicate. Match each row
+            # to the prior day's balance where the candidate code is missing.
+            for date in daily.loc[daily[["Date", "Item_Code"]].duplicated(keep=False), "Date"].unique():
+                day = daily.loc[daily.Date == date]
+                missing = set(master.Item_Code) - set(day.Item_Code)
+                for code in day.loc[day.Item_Code.duplicated(keep=False), "Item_Code"].unique():
+                    rows = day.index[day.Item_Code == code].tolist()
+                    candidates = [c for c in missing if c[:3] == str(code)[:3] and
+                                  (norm(master.loc[master.Item_Code == c, "Item Name"].iloc[0]) == norm(day.loc[rows[0], "Item Name"])
+                                   or str(code).startswith("BEV"))]
+                    if len(rows) != 2 or len(candidates) != 1:
+                        continue
+                    candidate = candidates[0]
+                    previous = daily.loc[(daily.Date < date) & (daily.Item_Code == candidate)].sort_values("Date")
+                    if previous.empty:
+                        continue
+                    balance = num(previous.iloc[-1]["Closing Qty"])
+                    if balance is None:
+                        continue
+                    def gap(index):
+                        opening = num(day.at[index, "Opening Qty"])
+                        return abs(opening - balance) if opening is not None else float("inf")
+                    chosen = min(rows, key=gap)
+                    if gap(chosen) < gap(rows[1] if chosen == rows[0] else rows[0]):
+                        daily.at[chosen, "Item_Code"] = candidate
+        if daily[["Date", "Item_Code"]].duplicated().any():
+            raise ValueError("Stock_Data has duplicate date and item code rows that cannot be resolved from Item Name.")
         if set(daily.Item_Code) - set(master.Item_Code):
             raise ValueError("Stock_Data contains item codes absent from Item_Master.")
         for col in ("Opening Qty", "Opening Value", "Purchase Qty", "Purchase Value",
@@ -115,8 +157,6 @@ class Inventory:
         for col in ("Price", "MOQ", "Lead Time", "Avg Daily Consumption"):
             master[col] = pd.to_numeric(master[col], errors="coerce")
         latest = daily.Date.max()
-        if set(daily.loc[daily.Date == latest, "Item_Code"]) != set(master.Item_Code):
-            raise ValueError("Latest stock date does not include every master item.")
         return cls(master, daily, latest, str(path))
 
     def _matches(self, question, *, implicit=False):
@@ -150,7 +190,11 @@ class Inventory:
         return self.items.iloc[matched].to_dict("records"), None
 
     def _latest(self):
-        return self.daily[self.daily.Date == self.latest_date].set_index("Item_Code")
+        # Closing balances carry forward per item; movements stay on their
+        # actual dates and are never copied into purchase/issue trends.
+        return (self.daily.sort_values("Date")
+                .drop_duplicates("Item_Code", keep="last")
+                .set_index("Item_Code"))
 
     def _category_items(self, phrase):
         return self.items.loc[self.items.Category.map(norm) == norm(phrase)].to_dict("records")
