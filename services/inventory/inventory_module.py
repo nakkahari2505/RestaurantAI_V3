@@ -157,14 +157,8 @@ class Inventory:
 
     def total_stock_answer(self, warehouse=False):
         latest = self._latest()
-        count = int(((latest["Closing Qty"] > 0) & (latest["Closing value"].fillna(0) == 0)).sum())
-        answer = (f"Total recorded closing stock value: {money(latest['Closing value'].sum())} "
-                  f"as of {self.latest_date:%d %b %Y} (INR).")
-        if count:
-            answer += f" {count} items have positive quantity but zero/blank closing value; verify their valuation."
-        if warehouse:
-            answer += " The workbook has no location field, so this is overall stock, not a warehouse-only figure."
-        return answer
+        return (f"Total closing stock value: {money(latest['Closing value'].sum())} "
+                f"as of {self.latest_date:%d %b %Y}.")
 
     def reorder(self, limit=5):
         current = self._latest()
@@ -192,11 +186,10 @@ class Inventory:
         lines = []
         for index, (_, _, stock, item, cover, suggested) in enumerate(rows[:limit], 1):
             unit = item["Unit"]
-            flag = " Verify negative stock." if stock < 0 else ""
-            lines.append(f'{index}. {item["Item Name"]}: stock {qty(stock)} {unit}; lead {qty(item["Lead Time"])} days; use {daily_rate(item["Avg Daily Consumption"])} {unit}/day; order {qty(suggested)} {unit}.{flag}')
+            flag = " (negative stock)" if stock < 0 else ""
+            lines.append(f'{index}. {item["Item Name"]}: stock {qty(stock)} {unit}; lead {qty(item["Lead Time"])} days; use {daily_rate(item["Avg Daily Consumption"])} {unit}/day; order {qty(suggested)} {unit}{flag}.')
         return (f"Buying priorities as of {self.latest_date:%d %b %Y}:\n" +
-                ("\n".join(lines) if lines else "No items with valid consumption and lead time are below lead-time cover.") +
-                "\nSuggested quantity targets two lead-time cycles of demand, with MOQ as a minimum. Ranked by projected lead-time shortage value; negative stock is flagged. Check pending orders and physical stock before buying.")
+                ("\n".join(lines) if lines else "No items below lead-time cover."))
 
     def movement_answer(self, question):
         q = norm(question)
@@ -280,7 +273,7 @@ class Inventory:
             return error
         if len(matched) > 5:
             names = ", ".join(dict.fromkeys(str(x["Item Name"]) for x in matched[:7]))
-            return f"Which item or variety do you mean? The workbook has: {names}. Please name one more specifically."
+            return f"Which item or variety? {names}."
         if "trend" not in q:
             lines = []
             for item in matched:
@@ -320,7 +313,7 @@ class Inventory:
         if intent.kind in {"stock", "opening"} and not item_phrase(question):
             if intent.kind == "opening":
                 latest = self._latest()
-                return f"Total recorded opening stock value: {money(latest['Opening Value'].fillna(0).sum())} {stamp} (INR)."
+                return f"Total opening stock value: {money(latest['Opening Value'].fillna(0).sum())} {stamp}."
             return self.total_stock_answer("warehouse" in q)
         if intent.kind == "stock":
             category = self._category_items(item_phrase(question))
@@ -329,7 +322,7 @@ class Inventory:
                 codes = [x["Item_Code"] for x in category]
                 return (f"{category[0]['Category']} closing stock value: "
                         f"{money(current.loc[codes, 'Closing value'].fillna(0).sum())} {stamp} "
-                        f"({len(codes)} items; INR). Quantities have different units.")
+                        f"({len(codes)} items).")
         matched, error = self._matches(question)
         if error:
             return error
@@ -356,7 +349,7 @@ class Inventory:
                 if stock is None or use is None or use <= 0:
                     lines.append(f"{prefix}: days cover unavailable (stock or average consumption missing).")
                 elif stock < 0:
-                    lines.append(f"{prefix}: {qty(stock)} {unit}; negative recorded stock, verify urgently. Days cover unavailable.")
+                    lines.append(f"{prefix}: {qty(stock)} {unit}; days cover unavailable (negative stock).")
                 else:
                     lines.append(f"{prefix}: {qty(stock)} {unit} ÷ {daily_rate(use)} {unit}/day = {stock/use:.1f} days cover.")
             else:
@@ -372,5 +365,4 @@ class Inventory:
                 rows = [current.loc[x["Item_Code"]] for x in matched]
                 if all(num(r["Closing Qty"]) is not None for r in rows):
                     lines.append(f"Combined: {qty(sum(num(r['Closing Qty']) for r in rows))} {next(iter(units))}; recorded value {money(sum(num(r['Closing value']) or 0 for r in rows))}.")
-        suffix = " The sheet has no warehouse location field; this is overall recorded stock." if "warehouse" in q else ""
-        return f"Inventory {stamp}:\n" + "\n".join(lines) + suffix
+        return f"Inventory {stamp}:\n" + "\n".join(lines)
