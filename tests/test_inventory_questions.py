@@ -1,5 +1,6 @@
 """Representative WhatsApp questions against the dated Auberry workbook."""
 import unittest
+import re
 
 from services.inventory.whatsapp_inventory import answer_inventory_whatsapp
 
@@ -20,6 +21,9 @@ CASES = [
     ("How many KG of sugar were issued this month?", "KG; value"),
     ("Issue trend last one week", "Date | Value (INR)"),
     ("Purchase trend for last 6 days", "Date | Value (INR)"),
+    ("day wise purchase for last 10 days", "Date | Value (INR)"),
+    ("day wise issue in last one week", "Date | Value (INR)"),
+    ("daily purchase breakdown for last 5 days", "Date | Value (INR)"),
     ("Average daily consumption of Oil", "LTR/day"),
     ("average rice consumption trend?", "Which rice do you mean"),
     ("What should I order today?", "order "),
@@ -49,6 +53,17 @@ class InventoryQuestions(unittest.TestCase):
         for question in OTHER:
             with self.subTest(question=question):
                 self.assertIsNone(answer_inventory_whatsapp(question))
+
+    def test_requested_daily_rows(self):
+        for question, count in (
+            ("day wise purchase for last 10 days", 10),
+            ("day wise issue in last one week", 7),
+        ):
+            with self.subTest(question=question):
+                answer = answer_inventory_whatsapp(question)
+                dated_rows = re.findall(r"(?m)^\d{2} [A-Za-z]{3} \d{4} \| ₹", answer)
+                self.assertEqual(len(dated_rows), count)
+                self.assertIn("Total: ₹", answer)
 
 
 if __name__ == "__main__":

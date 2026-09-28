@@ -13,7 +13,7 @@ import pandas as pd
 
 MASTER = {"Item_Code", "Item Name", "Item Raw Name", "Vendor Name", "Unit", "Price", "MOQ", "Lead Time", "Avg Daily Consumption"}
 MOVEMENT = {"Date", "Item_Code", "Opening Qty", "Opening Value", "Purchase Qty", "Purchase Value", "Issueing Qty", "Issueing Value", "Closing Qty", "Closing value"}
-NOISE = set("how much many of the my our is are was were did do i we have there in as now current stock closing inventory quantity value days will last for what where buy buying from at which who supplies supplier vendor price per kg kgs ltr litre litres warehouse available and should order me give to tell please this long does it today remaining ly a an average daily consumption trend opening purchase purchased purchases issue issued issuing monthly month mtd last past previous week weeks day date total overall entire all worth cost one seven latest recorded doing performance".split())
+NOISE = set("how much many of the my our is are was were did do i we have there in as now current stock closing inventory quantity value days will last for what where buy buying from at which who supplies supplier vendor price per kg kgs ltr litre litres warehouse available and should order me give to tell please this long does it today remaining ly a an average daily consumption trend opening purchase purchased purchases issue issued issuing monthly month mtd last past previous week weeks day date total overall entire all worth cost one seven latest recorded doing performance wise daywise datewise breakdown breakup break down".split())
 
 
 def norm(value):
@@ -238,7 +238,8 @@ class Inventory:
         span = (self.latest_date-start).days+1
         period = f"{start:%d %b}–{self.latest_date:%d %b %Y}"
         # A specifically requested day-count trend is a dated daily series.
-        if days is not None and "trend" in q:
+        daily_requested = bool(re.search(r"\b(trend|day wise|date wise|daywise|datewise|daily|breakdown|break up)\b", q))
+        if days is not None and daily_requested:
             quantity_trend = bool(selected and re.search(r"\b(qty|quantity|kgs?|litres?|units?)\b", q))
             trend_field = qty_field if quantity_trend else field
             daily = frame.groupby("Date")[trend_field].sum()
@@ -258,9 +259,9 @@ class Inventory:
             unit_note = f"{qty(movement_qty)} {next(iter(units))}; "
             names = ", ".join(dict.fromkeys(str(x["Item Name"]) for x in selected))
             return f"{label} for {names} ({period}): {unit_note}value {money(total)}."
-        if "average" in q and "trend" not in q and not re.search(r"\b(how|doing|performance)\b", q):
+        if "average" in q and not daily_requested and not re.search(r"\b(how|doing|performance)\b", q):
             return f"Average daily {label.lower()} value: {money(total/span)} over {span} calendar days ({period}); total {money(total)}."
-        if "trend" in q or re.search(r"\b(how|doing|performance)\b", q):
+        if daily_requested or re.search(r"\b(how|doing|performance)\b", q):
             by_item = frame.groupby("Item_Code")[field].sum().sort_values(ascending=False).head(5)
             details = self.items.set_index("Item_Code")
             quantities = frame.groupby("Item_Code")[qty_field].sum()
